@@ -1025,6 +1025,21 @@ class KubernetesPodOperator(BaseOperator):
         )
         redefer_count = event.get("_redefer_count", 0)
 
+        if event["status"] == "running" and pod_is_not_done:
+            if self.get_logs:
+                try:
+                    self._write_logs(self.pod, follow=False, since_time=last_log_time)
+                except (HTTPError, ApiException) as e:
+                    self.log.warning(
+                        "Reading of logs interrupted with error %r. "
+                        "Set log level to DEBUG for traceback.",
+                        e if not isinstance(e, ApiException) else e.reason,
+                    )
+            return self.invoke_defer_method(
+                last_log_time=last_log_time,
+                context=context,
+            )
+
         if event["status"] == "error" and pod_is_not_done and redefer_count < self.MAX_REDEFER_ATTEMPTS:
             self.log.warning(
                 "Trigger returned but pod %s is still in phase %s. "

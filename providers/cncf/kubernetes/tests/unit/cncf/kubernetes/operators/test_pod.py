@@ -3252,6 +3252,50 @@ class TestKubernetesPodOperatorAsync:
         mock_invoke_defer.assert_called_once()
         assert op.trigger_kwargs["_redefer_count"] == 1
 
+    @patch(KUB_OP_PATH.format("_write_logs"))
+    @patch(KUB_OP_PATH.format("invoke_defer_method"))
+    @patch(HOOK_CLASS)
+    def test_redefer_when_running_event_returns_before_pod_completion(
+        self, mocked_hook, mock_invoke_defer, mocked_write_logs
+    ):
+        """When a log interval re-entry sees a running pod, fetch logs and re-defer."""
+        mock_invoke_defer.side_effect = TaskDeferred(trigger=MagicMock(), method_name="trigger_reentry")
+
+        base_container = MagicMock()
+        base_container.name = "base"
+        base_container.state.running = MagicMock()
+        base_container.state.terminated = None
+        base_container.state.waiting = None
+
+        remote_pod = MagicMock()
+        remote_pod.status.phase = "Running"
+        remote_pod.status.container_statuses = [base_container]
+        mocked_hook.return_value.get_pod.return_value = remote_pod
+
+        op = KubernetesPodOperator(
+            task_id="test_task",
+            name="test-pod",
+            deferrable=True,
+            get_logs=True,
+            logging_interval=30,
+        )
+        context = create_context(op)
+        last_log_time = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        event = {
+            "status": "running",
+            "message": "pod is still running",
+            "name": TEST_NAME,
+            "namespace": TEST_NAMESPACE,
+            "last_log_time": last_log_time,
+        }
+
+        with pytest.raises(TaskDeferred):
+            op.trigger_reentry(context, event)
+
+        mocked_write_logs.assert_called_once_with(remote_pod, follow=False, since_time=last_log_time)
+        mock_invoke_defer.assert_called_once_with(last_log_time=last_log_time, context=context)
+        self.await_pod_mock.assert_not_called()
+
     @patch(KUB_OP_PATH.format("invoke_defer_method"))
     @patch(HOOK_CLASS)
     def test_redefer_when_pod_pending(self, mocked_hook, mock_invoke_defer):
